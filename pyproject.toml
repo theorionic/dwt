@@ -1,0 +1,11 @@
+[project]
+name = "dwt"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "flax>=0.12.6",
+    "jax[cuda13]>=0.9.2",
+    "orbax>=0.1.9",
+]
