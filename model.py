@@ -57,8 +57,11 @@ class MultiAspectRetrieval(nnx.Module):
     Both paths update the same v_i parameters — self-reinforcing learning.
 
     lambda_sharp annealing:
-      phase 1  → lambda_sharp=0  →  sigmoid=0.5 for all  →  pure softmax
-      phase 2+ → lambda_sharp>0  →  sparse sigmoid gating
+      phase 1  → lambda_sharp=0  →  sigmoid=0.5 for top-k  →  pure softmax over top-k
+      phase 2+ → lambda_sharp>0  →  sparse sigmoid gating over top-k
+
+    Top-k masking: scores are masked to k_max before gating so training
+    exactly matches inference (which fetches only k_max vectors via MIPS).
     """
 
     def __init__(self, cfg: DWAConfig, rngs: nnx.Rngs) -> None:
@@ -104,7 +107,21 @@ class MultiAspectRetrieval(nnx.Module):
         w = jax.nn.softmax(self.aspect_logits.value)  # [S]
         scores = jnp.einsum("bna,a->bn", sims, w)
 
-        # Sigmoid gate  (lambda_sharp=0 → g=0.5 for all → cancels → pure softmax)
+        # Top-k mask: restrict to k_max vectors per sample so training matches
+        # inference. Inference (pool_store.py) fetches only k_max vectors via MIPS;
+        # without this mask training learns to rely on vectors ranked just outside
+        # k_max that MIPS will never return.
+        #
+        # Use a large negative finite value (not -inf) to avoid 0 * -inf = NaN
+        # when lambda_sharp=0 in phase 1.
+        if self.cfg.k_max < self.cfg.N:
+            _, top_k_idx = jax.lax.top_k(scores, self.cfg.k_max)    # [batch, k_max]
+            batch_idx = jnp.arange(scores.shape[0])[:, None]         # [batch, 1]
+            mask = jnp.zeros(scores.shape, dtype=jnp.bool_)
+            mask = mask.at[batch_idx, top_k_idx].set(True)
+            scores = jnp.where(mask, scores, -1e9)
+
+        # Sigmoid gate  (lambda_sharp=0 → g=0.5 for top-k → cancels → pure softmax over top-k)
         g = jax.nn.sigmoid(lambda_sharp * (scores - self.tau.value))
 
         # Normalized assembly weights
