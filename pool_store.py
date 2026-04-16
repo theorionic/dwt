@@ -12,7 +12,7 @@ Components:
 Memory profile (full config, N=65536, D=16384):
   - VRAM: ~500MB (parts A/B + retrieval proj + W_base + active vectors)
   - Disk: ~2GB (pool, bf16) + ~500MB (index)
-  - Per-token disk read: 16 × 16384 × 2 = 512KB
+  - Per-token disk read: 16 * 16384 * 2 = 512KB
 """
 
 import os
@@ -220,7 +220,7 @@ class DWAInferenceModel:
         w_aspects = jax.nn.softmax(self.aspect_logits)     # [S]
         token_scores = jnp.einsum("bka,a->bk", sims, w_aspects)  # [1, k]
 
-        # Sigmoid gate (use fixed λ=10 for inference)
+        # Sigmoid gate (use fixed lambda=10 for inference)
         g = jax.nn.sigmoid(10.0 * (token_scores - self.tau))
         alpha_raw = g * jnp.exp(token_scores)
         alpha = alpha_raw / (jnp.sum(alpha_raw, axis=-1, keepdims=True) + 1e-8)  # [1, k]
@@ -259,7 +259,7 @@ class DWAInferenceModel:
         self,
         token_ids: list[int],
         max_new: int,
-        itos: dict,
+        tok,
         temperature: float = 0.8,
         k: int = 16,
     ) -> Tuple[str, list[float]]:
@@ -307,5 +307,5 @@ class DWAInferenceModel:
             next_id = int(jax.random.categorical(sub, last_logits))
             ids.append(next_id)
 
-        text = "".join(itos[i] for i in ids)
+        text = tok.decode(ids)
         return text, fetch_times

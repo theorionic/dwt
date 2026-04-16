@@ -31,12 +31,12 @@ from losses import compute_losses
 
 def get_lambda_sharp(step: int, cfg: DWAConfig) -> float:
     """
-    Returns the sigmoid sharpness λ for the current training step.
+    Returns the sigmoid sharpness lambda for the current training step.
 
-    Phase 1: λ=0       → sigmoid=0.5 everywhere → cancels in normalization
+    Phase 1: lambda=0       → sigmoid=0.5 everywhere → cancels in normalization
                         → equivalent to pure softmax over all N vectors
-    Phase 2: λ: 0→5    → gate gradually sharpens
-    Phase 3: λ: 5→10   → final sharpening
+    Phase 2: lambda: 0→5    → gate gradually sharpens
+    Phase 3: lambda: 5→10   → final sharpening
     """
     if step < cfg.phase1_end:
         return 0.0
@@ -198,7 +198,7 @@ def train(
                 f"step {step:5d} [{phase:8s}]  "
                 f"total={entry['total']:.4f}  "
                 f"task={entry['task']:.4f}  "
-                f"λ={entry['lambda_sharp']:.2f}"
+                f"lambda={entry['lambda_sharp']:.2f}"
             )
 
     return log

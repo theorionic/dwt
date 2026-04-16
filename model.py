@@ -22,6 +22,7 @@ from config import DWAConfig
 # Vector pool
 # ---------------------------------------------------------------------------
 
+
 class VectorPool(nnx.Module):
     """
     Learnable pool of N D-dimensional vectors.
@@ -47,6 +48,7 @@ class VectorPool(nnx.Module):
 # ---------------------------------------------------------------------------
 # Multi-aspect sigmoid-gated retrieval
 # ---------------------------------------------------------------------------
+
 
 class MultiAspectRetrieval(nnx.Module):
     """
@@ -74,12 +76,12 @@ class MultiAspectRetrieval(nnx.Module):
         self.W_K = nnx.Param(lecun(rngs.params(), (cfg.S, cfg.D, cfg.d_k)))
         # Learnable aspect importance weights (initialized uniform)
         self.aspect_logits = nnx.Param(jnp.zeros(cfg.S))
-        # Learnable gate threshold τ
+        # Learnable gate threshold tau
         self.tau = nnx.Param(jnp.array(cfg.tau_init))
 
     def __call__(
         self,
-        z: jax.Array,             # [batch, d_A] — query from Part A
+        z: jax.Array,  # [batch, d_A] — query from Part A
         pool_vectors: jax.Array,  # [N, D]
         lambda_sharp: float,
         temperature: float,
@@ -115,8 +117,8 @@ class MultiAspectRetrieval(nnx.Module):
         # Use a large negative finite value (not -inf) to avoid 0 * -inf = NaN
         # when lambda_sharp=0 in phase 1.
         if self.cfg.k_max < self.cfg.N:
-            _, top_k_idx = jax.lax.top_k(scores, self.cfg.k_max)    # [batch, k_max]
-            batch_idx = jnp.arange(scores.shape[0])[:, None]         # [batch, 1]
+            _, top_k_idx = jax.lax.top_k(scores, self.cfg.k_max)  # [batch, k_max]
+            batch_idx = jnp.arange(scores.shape[0])[:, None]  # [batch, 1]
             mask = jnp.zeros(scores.shape, dtype=jnp.bool_)
             mask = mask.at[batch_idx, top_k_idx].set(True)
             scores = jnp.where(mask, scores, -1e9)
@@ -135,20 +137,21 @@ class MultiAspectRetrieval(nnx.Module):
 # Factorized assembly + middle layer forward
 # ---------------------------------------------------------------------------
 
+
 class DWAMiddleLayer(nnx.Module):
     """
     Splits each pool vector into low-rank factors, assembles a per-sample
     weight matrix, and applies the dynamic linear transform with a residual.
 
     Pool vector layout (first elements used; rest available for keys):
-      [  U_i: d_B×r  |  V_i: r×d_A  |  b_i: d_B  |  ... unused ... ]
+      [  U_i: d_B*r  |  V_i: r*d_A  |  b_i: d_B  |  ... unused ... ]
 
     Assembly:
-      W_assembled = W_base + Σ_i α_i (U_i @ V_i)
-      b_assembled = b_base + Σ_i α_i b_i
+      W_assembled = W_base + sum_i alpha_i (U_i @ V_i)
+      b_assembled = b_base + sum_i alpha_i b_i
 
     Forward:
-      h_mid = LayerNorm(h_A + γ · (h_A @ W_assembled^T + b_assembled))
+      h_mid = LayerNorm(h_A + gamma * (h_A @ W_assembled^T + b_assembled))
     """
 
     def __init__(self, cfg: DWAConfig, rngs: nnx.Rngs) -> None:
@@ -165,7 +168,7 @@ class DWAMiddleLayer(nnx.Module):
         )
         self.b_base = nnx.Param(jnp.zeros(cfg.d_B))
 
-        # Residual scale γ — LoRA-style, initialized to near-zero
+        # Residual scale gamma — LoRA-style, initialized to near-zero
         self.gamma = nnx.Param(jnp.array(cfg.gamma_init))
 
         self.layer_norm = nnx.LayerNorm(cfg.d_A, rngs=rngs)
@@ -173,7 +176,7 @@ class DWAMiddleLayer(nnx.Module):
     def assemble(
         self,
         pool_vectors: jax.Array,  # [N, D]
-        alpha: jax.Array,         # [batch, N]
+        alpha: jax.Array,  # [batch, N]
     ) -> Tuple[jax.Array, jax.Array]:
         """
         Returns:
@@ -183,27 +186,31 @@ class DWAMiddleLayer(nnx.Module):
         cfg = self.cfg
 
         # Split pool vectors into factorized components
-        U    = pool_vectors[:, :self._u_end].reshape((cfg.N, cfg.d_B, cfg.r))         # [N, d_B, r]
-        V    = pool_vectors[:, self._u_end:self._v_end].reshape((cfg.N, cfg.r, cfg.d_A))  # [N, r, d_A]
-        bias = pool_vectors[:, self._v_end:self._b_end]                                 # [N, d_B]
+        U = pool_vectors[:, : self._u_end].reshape(
+            (cfg.N, cfg.d_B, cfg.r)
+        )  # [N, d_B, r]
+        V = pool_vectors[:, self._u_end : self._v_end].reshape(
+            (cfg.N, cfg.r, cfg.d_A)
+        )  # [N, r, d_A]
+        bias = pool_vectors[:, self._v_end : self._b_end]  # [N, d_B]
 
         # Low-rank products: U_i @ V_i  →  [N, d_B, d_A]
         UV = jnp.einsum("ndr,nre->nde", U, V)
 
         # Weighted combination over pool
-        W_delta = jnp.einsum("bn,nde->bde", alpha, UV)   # [batch, d_B, d_A]
-        b_delta = jnp.einsum("bn,nd->bd",   alpha, bias)  # [batch, d_B]
+        W_delta = jnp.einsum("bn,nde->bde", alpha, UV)  # [batch, d_B, d_A]
+        b_delta = jnp.einsum("bn,nd->bd", alpha, bias)  # [batch, d_B]
 
-        W_assembled = self.W_base.value[None] + W_delta   # broadcast base over batch
+        W_assembled = self.W_base.value[None] + W_delta  # broadcast base over batch
         b_assembled = self.b_base.value[None] + b_delta
 
         return W_assembled, b_assembled
 
     def __call__(
         self,
-        h_A: jax.Array,           # [batch, d_A]
-        W_assembled: jax.Array,   # [batch, d_B, d_A]
-        b_assembled: jax.Array,   # [batch, d_B]
+        h_A: jax.Array,  # [batch, d_A]
+        W_assembled: jax.Array,  # [batch, d_B, d_A]
+        b_assembled: jax.Array,  # [batch, d_B]
     ) -> jax.Array:
         """Returns h_mid: [batch, d_A]  (d_A == d_B in symmetric config)"""
         # h_A @ W_assembled^T per sample:  einsum over d_A axis
@@ -220,6 +227,7 @@ class DWAMiddleLayer(nnx.Module):
 # Part A / Part B halves
 # ---------------------------------------------------------------------------
 
+
 class MLP(nnx.Module):
     """Simple GELU MLP — stands in for the Part A / Part B model halves."""
 
@@ -232,10 +240,9 @@ class MLP(nnx.Module):
         rngs: nnx.Rngs,
     ) -> None:
         dims = [in_dim] + [hidden_dim] * (n_layers - 1) + [out_dim]
-        self.layers = nnx.List([
-            nnx.Linear(dims[i], dims[i + 1], rngs=rngs)
-            for i in range(len(dims) - 1)
-        ])
+        self.layers = [
+            nnx.Linear(dims[i], dims[i + 1], rngs=rngs) for i in range(len(dims) - 1)
+        ]
 
     def __call__(self, x: jax.Array) -> jax.Array:
         for i, layer in enumerate(self.layers):
@@ -249,6 +256,7 @@ class MLP(nnx.Module):
 # Full DWA model
 # ---------------------------------------------------------------------------
 
+
 class DWAModel(nnx.Module):
     """
     Dynamic Weight Assembly model.
@@ -261,15 +269,15 @@ class DWAModel(nnx.Module):
 
     def __init__(self, cfg: DWAConfig, rngs: nnx.Rngs) -> None:
         self.cfg = cfg
-        self.pool      = VectorPool(cfg, rngs)
-        self.part_A    = MLP(cfg.d_model, cfg.d_model * 2, cfg.d_A, cfg.n_layers_A, rngs)
+        self.pool = VectorPool(cfg, rngs)
+        self.part_A = MLP(cfg.d_model, cfg.d_model * 2, cfg.d_A, cfg.n_layers_A, rngs)
         self.retrieval = MultiAspectRetrieval(cfg, rngs)
-        self.middle    = DWAMiddleLayer(cfg, rngs)
-        self.part_B    = MLP(cfg.d_A, cfg.d_model * 2, cfg.d_model, cfg.n_layers_B, rngs)
+        self.middle = DWAMiddleLayer(cfg, rngs)
+        self.part_B = MLP(cfg.d_A, cfg.d_model * 2, cfg.d_model, cfg.n_layers_B, rngs)
 
     def __call__(
         self,
-        x: jax.Array,          # [batch, d_model]
+        x: jax.Array,  # [batch, d_model]
         lambda_sharp: float = 1.0,
         temperature: float = 1.0,
     ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:

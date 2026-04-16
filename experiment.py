@@ -43,7 +43,7 @@ def cross_entropy(logits: jax.Array, targets: jax.Array) -> jax.Array:
 def dwa_total_loss(
     logits: jax.Array,
     targets: jax.Array,
-    alpha: jax.Array,       # [B·T, N]
+    alpha: jax.Array,       # [B*T, N]
     alpha_ema: jax.Array,   # [N]
     keys: jax.Array,        # [N, S, d_k]
     w_norm: jax.Array,      # scalar
@@ -101,7 +101,7 @@ def make_dwa_step(cfg: LMConfig):
         lambda_sharp: jax.Array,
         temperature: jax.Array,
         aux_scale: jax.Array,
-    ) -> Tuple[jax.Array, dict, jax.Array]:
+    ) -> Tuple[jax.Array, dict, jax.Array, jax.Array]:
         def loss_fn(m: DWALanguageModel):
             logits, alpha, keys, w_norm = m(x, lambda_sharp, temperature)
             total, breakdown = dwa_total_loss(
@@ -112,7 +112,12 @@ def make_dwa_step(cfg: LMConfig):
         grad_fn = nnx.value_and_grad(loss_fn, has_aux=True)
         (total, (breakdown, alpha)), grads = grad_fn(model)
         opt.update(model, grads)
-        return total, breakdown, alpha
+
+        # Fuse EMA update into the same JIT call
+        batch_mean = jnp.mean(alpha.reshape(-1, cfg.N), axis=0)
+        new_alpha_ema = cfg.ema_decay * alpha_ema + (1.0 - cfg.ema_decay) * batch_mean
+
+        return total, breakdown, alpha, new_alpha_ema
 
     return step
 
@@ -268,7 +273,7 @@ def train_dwa(
                 f"  step {s:5d} [{phase:8s}]  "
                 f"train_ce={entry['train_ce']:.3f}  "
                 f"val_ppl={ppl:7.2f}  "
-                f"λ={entry['lambda']:.2f}  "
+                f"lambda={entry['lambda']:.2f}  "
                 f"({elapsed:.0f}s)"
             )
 

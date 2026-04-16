@@ -12,3 +12,6 @@ wheels/
 # Data and IDE
 data/
 .omc/
+ckpts/
+.ruff_cache/
+*.json
